@@ -3,12 +3,39 @@
 //
 // Модель тоже задаётся здесь, а не во фронтенде — так её можно сменить на платную
 // (для надёжности перед демо клиентам) одной правкой переменной окружения, без редеплоя фронта.
+//
+// Дополнительно: перед каждым запросом проверяется, активна ли компания (оплачена или
+// ещё в пробном периоде) — это защита от того, что после ручного отключения проверки
+// в браузере кто-то продолжит бесплатно пользоваться сервисом.
 
 const DEFAULT_MODEL = "google/gemma-4-31b-it:free";
 const FALLBACK_MODELS = [
   "nvidia/nemotron-3-ultra-550b-a55b:free",
   "poolside/laguna-m.1:free"
 ];
+
+async function isCompanyActive(companyId) {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+  if (!companyId || !supabaseUrl || !supabaseAnonKey) return true; // нет данных для проверки — не блокируем
+
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/rpc/is_company_active`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": supabaseAnonKey,
+        "Authorization": `Bearer ${supabaseAnonKey}`
+      },
+      body: JSON.stringify({ cid: companyId })
+    });
+    if (!res.ok) return true; // Supabase недоступен технически — не роняем сервис из-за этого
+    const isActive = await res.json();
+    return isActive === true;
+  } catch (e) {
+    return true; // fail-open при сетевой ошибке проверки — не блокируем из-за временного сбоя
+  }
+}
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
@@ -23,7 +50,12 @@ exports.handler = async (event) => {
   const model = process.env.OPENROUTER_MODEL || DEFAULT_MODEL;
 
   try {
-    const { messages } = JSON.parse(event.body || "{}");
+    const { messages, company_id } = JSON.parse(event.body || "{}");
+
+    const active = await isCompanyActive(company_id);
+    if (!active) {
+      return { statusCode: 403, body: JSON.stringify({ error: "TRIAL_EXPIRED" }) };
+    }
 
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",

@@ -270,6 +270,29 @@
   .saved-script-pick.selected{border-color:var(--accent);background:var(--accent-soft);}
   .saved-script-pick .stitle{font-family:'Unbounded',sans-serif;font-weight:600;font-size:13px;}
   .saved-script-pick .smeta{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);text-transform:uppercase;}
+
+  .calls-list{display:flex;flex-direction:column;gap:10px;}
+  .call-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px 16px;cursor:pointer;}
+  .call-card-top{display:flex;justify-content:space-between;align-items:center;gap:10px;}
+  .call-card .cwho{font-family:'Unbounded',sans-serif;font-weight:600;font-size:13.5px;}
+  .call-card .cmeta{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-top:3px;}
+  .call-card .cscore-pill{font-family:'Unbounded',sans-serif;font-weight:700;font-size:15px;padding:4px 12px;border-radius:100px;flex:none;}
+  .call-card .cscore-pill.good{background:var(--green-soft);color:var(--green);}
+  .call-card .cscore-pill.mid{background:var(--accent-soft);color:var(--accent);}
+  .call-card .cscore-pill.low{background:var(--red-soft);color:var(--red);}
+  .call-card .cdetails{display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);font-size:13px;color:var(--text-dim);line-height:1.6;}
+  .call-card.expanded .cdetails{display:block;}
+  .call-card .cdetails b{color:var(--text);}
+  .call-card .ctranscript{margin-top:10px;background:var(--panel-2);border-radius:10px;padding:12px 14px;max-height:220px;overflow-y:auto;font-size:12.5px;white-space:pre-wrap;}
+
+  .trial-banner{border-radius:14px;padding:13px 18px;margin-bottom:20px;font-size:13.5px;line-height:1.5;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}
+  .trial-banner.notice{background:var(--accent-soft);border:1px solid var(--accent);color:var(--text);}
+  .trial-banner.expired{background:var(--red-soft);border:1px solid var(--red);color:var(--text);}
+  .trial-banner b{color:inherit;}
+
+  .trial-lock{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:32px 26px;text-align:center;}
+  .trial-lock h2{font-family:'Unbounded',sans-serif;font-size:20px;margin:0 0 10px;}
+  .trial-lock p{color:var(--text-dim);font-size:14px;line-height:1.6;max-width:420px;margin:0 auto 20px;}
   /* ==================== /AUTH / COMPANY DASHBOARD ==================== */
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -284,6 +307,8 @@
     </div>
     <button class="btn-ghost" id="logoutBtn">Выйти</button>
   </div>
+
+  <div id="trialBanner" style="display:none;"></div>
 
   <!-- ============ SCREEN 0: AUTH ============ -->
   <div class="screen active" id="screen-auth">
@@ -374,6 +399,10 @@
         <button class="btn-ghost" id="cancelScriptBtn">Отмена</button>
       </div>
     </div>
+
+    <label class="field-label">История звонков (<span id="callsCount">0</span>)</label>
+    <div class="chip-row" id="callsFilter"></div>
+    <div id="callsHistoryList" class="calls-list"></div>
 
     <div class="btn-row" style="margin-top:26px;">
       <button class="btn" id="adminToTrainingBtn">Пройти тренировку самому →</button>
@@ -471,6 +500,16 @@
     </div>
   </div>
 
+  <!-- ============ SCREEN: TRIAL LOCKED ============ -->
+  <div class="screen" id="screen-trial-locked">
+    <div class="eyebrow">Тренажёр</div>
+    <div class="trial-lock">
+      <h2>Пробный период закончился</h2>
+      <p>Доступ к тренировкам для вашей компании временно приостановлен. Чтобы продолжить, свяжитесь с руководителем компании или с нами напрямую.</p>
+      <button class="btn-ghost" id="trialLogoutBtn">Выйти</button>
+    </div>
+  </div>
+
   <!-- ============ SCREEN 3: RESULTS ============ -->
   <div class="screen" id="screen-results">
     <div class="eyebrow">Тренажёр · 03 / Разбор звонка</div>
@@ -489,8 +528,13 @@ async function callOpenRouter(messages){
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages })
+    body: JSON.stringify({ messages, company_id: session.company ? session.company.id : null })
   });
+  if (res.status === 403) {
+    const err = new Error("TRIAL_EXPIRED");
+    err.trialExpired = true;
+    throw err;
+  }
   if (!res.ok) {
     const errText = await res.text().catch(()=> "");
     throw new Error(`Сервер ${res.status}: ${errText || res.statusText}`);
@@ -726,7 +770,16 @@ function showWaveform(){
   t.appendChild(wf); t.scrollTop = t.scrollHeight;
 }
 function hideWaveform(){ const wf=document.getElementById("wf"); if(wf) wf.remove(); }
-function showError(e){ document.getElementById("errorBox").innerHTML = `<div class="error-box">Не удалось получить ответ. Попробуй ещё раз. (${(e&&e.message)||"ошибка сети"})</div>`; }
+function showError(e){
+  if(e && e.trialExpired){
+    clearInterval(state.timerId);
+    if(recognition) try{recognition.stop();}catch(err){}
+    if(ttsSupported) speechSynthesis.cancel();
+    showScreen("screen-trial-locked");
+    return;
+  }
+  document.getElementById("errorBox").innerHTML = `<div class="error-box">Не удалось получить ответ. Попробуй ещё раз. (${(e&&e.message)||"ошибка сети"})</div>`;
+}
 
 // ---------- API ----------
 async function fetchClientReply(extraUserTurn) {
@@ -862,7 +915,9 @@ async function endCall(){
   try{
     const analysis = await evaluateCall();
     renderResults(analysis);
+    saveCallRecord(analysis); // фоновая запись в историю, не блокирует показ результата
   }catch(e){
+    if(e && e.trialExpired){ showScreen("screen-trial-locked"); return; }
     document.getElementById("resultsBody").innerHTML = `<div class="error-box">Не удалось получить разбор звонка. (${(e&&e.message)||"ошибка сети"})</div>`;
   }
 }
@@ -871,11 +926,40 @@ function renderLoadingResults(){
   document.getElementById("resultsBody").innerHTML = `<div class="loader-line"><div class="spin"></div>Анализирую разговор…</div>`;
 }
 
-async function evaluateCall(){
-  const transcript = state.messages.map(m=>{
+function buildTranscriptText(){
+  return state.messages.map(m=>{
     const clean = m.role==="assistant" ? parseReply(m.content).text : m.content;
     return (m.role==="user" ? "Продавец: " : state.character.name+": ") + clean;
   }).join("\n");
+}
+
+async function saveCallRecord(analysis){
+  if(!session.profile || !session.company) return; // тренировка без входа в аккаунт — не к чему привязать запись
+  try{
+    await sb.from("calls").insert({
+      company_id: session.company.id,
+      employee_id: session.profile.id,
+      employee_name: session.profile.full_name || "",
+      persona: state.character.name,
+      sphere: state.sphere,
+      audience: state.audience,
+      tension: state.tension.name,
+      overall_score: analysis.overall_score ?? null,
+      interest_score: state.interestScore ?? null,
+      verdict: analysis.verdict || "",
+      criteria: analysis.criteria || [],
+      strengths: analysis.strengths || [],
+      improvements: analysis.improvements || [],
+      transcript: state.messages.map(m=>({ role:m.role, text: m.role==="assistant" ? parseReply(m.content).text : m.content })),
+      duration_seconds: state.seconds
+    });
+  }catch(e){
+    console.warn("Не удалось сохранить звонок в историю:", e);
+  }
+}
+
+async function evaluateCall(){
+  const transcript = buildTranscriptText();
 
   const prompt = `Ты — опытный руководитель отдела продаж и наставник, оцениваешь тренировочный звонок стажёра.
 
@@ -944,6 +1028,7 @@ document.getElementById("restartBtn").addEventListener("click", ()=>{
   renderSphereChips();
   updateStartBtn();
   clearSavedScriptSelection();
+  if(!getTrialInfo().active){ showScreen("screen-trial-locked"); return; }
   showScreen("screen-setup");
 });
 
@@ -994,6 +1079,10 @@ document.getElementById("adminSignupBtn").addEventListener("click", async ()=>{
   const email = document.getElementById("adminEmail").value.trim();
   const password = document.getElementById("adminPassword").value;
   if(!companyName || !fullName || !email || !password){ authError("Заполни все поля."); return; }
+
+  const { data: allowed, error: allowedErr } = await sb.rpc("is_email_allowed", { check_email: email });
+  if(allowedErr){ authError("Не удалось проверить доступ: " + allowedErr.message); return; }
+  if(!allowed){ authError("Доступ пока ограничён — сейчас продукт на закрытом тестировании. Напиши нам, чтобы получить доступ."); return; }
 
   const { data: signData, error: signError } = await sb.auth.signUp({ email, password });
   if(signError){ authError("Не удалось зарегистрироваться: " + signError.message); return; }
@@ -1070,16 +1159,53 @@ async function loadSessionAndRoute(user){
   document.getElementById("topbarCompany").textContent = company ? company.name : "";
   document.getElementById("topbarRole").textContent = profile.role === "admin" ? "Администратор" : "Сотрудник";
 
+  renderTrialBanner();
+  const trial = getTrialInfo();
+
   if(profile.role === "admin"){
     document.getElementById("toAdminBtn").style.display = "inline-flex";
     await renderAdminDashboard();
-    showScreen("screen-admin");
+    showScreen("screen-admin"); // кабинет админа доступен всегда, даже после окончания триала
   } else {
     document.getElementById("toAdminBtn").style.display = "none";
-    await loadCompanyScriptsIntoSetup();
-    showScreen("screen-setup");
+    if(!trial.active){
+      showScreen("screen-trial-locked");
+    } else {
+      await loadCompanyScriptsIntoSetup();
+      showScreen("screen-setup");
+    }
   }
 }
+
+function getTrialInfo(){
+  if(!session.company) return { active:true, daysLeft:null, isPaid:false };
+  if(session.company.is_paid) return { active:true, daysLeft:null, isPaid:true };
+  const end = new Date(session.company.trial_ends_at);
+  const msLeft = end - new Date();
+  const daysLeft = Math.ceil(msLeft / (1000*60*60*24));
+  return { active: msLeft > 0, daysLeft, isPaid:false };
+}
+
+function renderTrialBanner(){
+  const banner = document.getElementById("trialBanner");
+  const info = getTrialInfo();
+  if(info.isPaid){ banner.style.display = "none"; return; }
+  if(!info.active){
+    banner.style.display = "flex";
+    banner.className = "trial-banner expired";
+    banner.innerHTML = `<span>Пробный период компании закончился. Тренировки временно недоступны — свяжитесь с нами для оформления доступа.</span>`;
+    return;
+  }
+  if(info.daysLeft !== null && info.daysLeft <= 2){
+    banner.style.display = "flex";
+    banner.className = "trial-banner notice";
+    banner.innerHTML = `<span>Пробный период: осталось ${info.daysLeft} ${info.daysLeft===1?"день":"дня"}.</span>`;
+    return;
+  }
+  banner.style.display = "none";
+}
+
+document.getElementById("trialLogoutBtn").addEventListener("click", ()=> document.getElementById("logoutBtn").click());
 
 // ---------- выход ----------
 document.getElementById("logoutBtn").addEventListener("click", async ()=>{
@@ -1094,6 +1220,7 @@ document.getElementById("logoutBtn").addEventListener("click", async ()=>{
 });
 
 document.getElementById("adminToTrainingBtn").addEventListener("click", async ()=>{
+  if(!getTrialInfo().active){ showScreen("screen-trial-locked"); return; }
   await loadCompanyScriptsIntoSetup();
   showScreen("screen-setup");
 });
@@ -1124,7 +1251,10 @@ async function renderAdminDashboard(){
   }
 
   await renderScriptsList();
+  await renderCallsHistory();
 }
+
+let callsFilterEmployee = "all";
 
 async function renderScriptsList(){
   const { data: scripts } = await sb.from("scripts").select("*").eq("company_id", session.company.id).order("created_at", { ascending:false });
@@ -1159,6 +1289,78 @@ async function renderScriptsList(){
       await sb.from("scripts").delete().eq("id", btn.dataset.delete);
       await renderScriptsList();
     });
+  });
+}
+
+async function renderCallsHistory(){
+  const { data: calls, error } = await sb.from("calls")
+    .select("*")
+    .eq("company_id", session.company.id)
+    .order("created_at", { ascending:false })
+    .limit(200);
+
+  const listEl = document.getElementById("callsHistoryList");
+  const countEl = document.getElementById("callsCount");
+  const filterEl = document.getElementById("callsFilter");
+
+  if(error){
+    listEl.innerHTML = `<div class="error-box">Не удалось загрузить историю: ${escapeHtml(error.message)}</div>`;
+    countEl.textContent = "0";
+    return;
+  }
+
+  countEl.textContent = (calls||[]).length;
+
+  const names = Array.from(new Set((calls||[]).map(c=>c.employee_name).filter(Boolean)));
+  filterEl.innerHTML = "";
+  if(names.length > 1){
+    const allChip = document.createElement("div");
+    allChip.className = "chip" + (callsFilterEmployee==="all" ? " selected" : "");
+    allChip.textContent = "Все сотрудники";
+    allChip.addEventListener("click", ()=>{ callsFilterEmployee="all"; renderCallsHistory(); });
+    filterEl.appendChild(allChip);
+    names.forEach(n=>{
+      const chip = document.createElement("div");
+      chip.className = "chip" + (callsFilterEmployee===n ? " selected" : "");
+      chip.textContent = n;
+      chip.addEventListener("click", ()=>{ callsFilterEmployee=n; renderCallsHistory(); });
+      filterEl.appendChild(chip);
+    });
+  }
+
+  const filtered = callsFilterEmployee==="all" ? (calls||[]) : (calls||[]).filter(c=>c.employee_name===callsFilterEmployee);
+
+  listEl.innerHTML = "";
+  if(filtered.length===0){
+    listEl.innerHTML = `<div class="empty-note">Звонков пока нет — они появятся здесь после того, как сотрудники пройдут тренировку.</div>`;
+    return;
+  }
+
+  filtered.forEach(c=>{
+    const score = c.overall_score ?? 0;
+    const scoreClass = score>=70 ? "good" : score>=45 ? "mid" : "low";
+    const date = new Date(c.created_at);
+    const dateStr = date.toLocaleString("ru-RU", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" });
+    const mins = Math.floor((c.duration_seconds||0)/60), secs = (c.duration_seconds||0)%60;
+
+    const card = document.createElement("div");
+    card.className = "call-card";
+    card.innerHTML = `
+      <div class="call-card-top">
+        <div>
+          <div class="cwho">${escapeHtml(c.employee_name || "Без имени")}</div>
+          <div class="cmeta">${escapeHtml(c.sphere||"")} · ${c.audience==="b2b"?"B2B":"B2C"} · ${escapeHtml(c.tension||"")} · ${dateStr}</div>
+        </div>
+        <div class="cscore-pill ${scoreClass}">${score}</div>
+      </div>
+      <div class="cdetails">
+        <div><b>Итог:</b> ${escapeHtml(c.verdict||"—")}</div>
+        <div style="margin-top:6px;"><b>Длительность:</b> ${mins}:${String(secs).padStart(2,"0")} · <b>Заинтересованность на конец звонка:</b> ${c.interest_score ?? "—"}/100</div>
+        ${(c.criteria||[]).length ? `<div style="margin-top:10px;">${(c.criteria||[]).map(cr=>`<div>• <b>${escapeHtml(cr.name)}</b>: ${cr.score}/10 — ${escapeHtml(cr.comment||"")}</div>`).join("")}</div>` : ""}
+        <div class="ctranscript">${(c.transcript||[]).map(m=>`${m.role==="user"?"Продавец":c.persona}: ${escapeHtml(m.text)}`).join("\n\n")}</div>
+      </div>`;
+    card.addEventListener("click", ()=> card.classList.toggle("expanded"));
+    listEl.appendChild(card);
   });
 }
 
